@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.granite/
+__pycache__/
+raw/
+submission/
+*.ait
+*.log
