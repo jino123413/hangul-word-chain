@@ -1,30 +1,31 @@
 {
-  "name": "hangul-word-chain",
-  "version": "1.0.0",
-  "private": true,
-  "description": "끝말잇기 챌린지 혼자 모드 미니앱",
-  "scripts": {
-    "dev": "granite dev",
-    "build": "granite build",
-    "check": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts"
-  },
-  "dependencies": {
-    "@apps-in-toss/web-framework": "1.5.2",
-    "@granite-js/native": "0.1.21",
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
-    "remixicon": "^4.6.0",
-    "tailwindcss": "^3.4.17"
-  },
-  "devDependencies": {
-    "@rsbuild/core": "^1.0.0",
-    "@rsbuild/plugin-react": "^1.0.0",
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.47",
-    "tsx": "^4.21.0",
-    "typescript": "^5.7.2"
-  }
+    "name": "hangul-word-chain",
+    "version": "1.0.0",
+    "private": true,
+    "description": "끝말잇기 챌린지 혼자 모드 미니앱",
+    "dependencies": {
+        "@apps-in-toss/web-framework": "^1.13.0",
+        "@granite-js/native": "0.1.21",
+        "react": "18.2.0",
+        "react-dom": "18.2.0",
+        "remixicon": "^4.6.0",
+        "tailwindcss": "^3.4.17"
+    },
+    "devDependencies": {
+        "@rsbuild/core": "^1.0.0",
+        "@rsbuild/plugin-react": "^1.0.0",
+        "@types/react": "^18.2.0",
+        "@types/react-dom": "^18.2.0",
+        "autoprefixer": "^10.4.20",
+        "postcss": "^8.4.47",
+        "tsx": "^4.21.0",
+        "typescript": "^5.7.2"
+    },
+    "scripts": {
+        "dev": "granite dev",
+        "build": "granite build",
+        "check": "tsc --noEmit",
+        "test": "tsx --test tests/**/*.test.ts",
+        "deploy": "ait deploy"
+    }
 }

@@ -1,9 +1,11 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { DeviceViewport } from './components/DeviceViewport';
+import BannerAd from './components/BannerAd';
 import { useInterstitialAd, useJsonStorage } from './hooks';
-import { countChallengeWords, isHangulWord, normalizeWord, verifyKoreanWord } from './game/wordValidation';
+import { isHangulWord, normalizeWord, verifyKoreanWord } from './game/wordValidation';
 
 type GamePhase = 'playing' | 'ended';
+type ViewMode = 'home' | 'game';
 
 type Turn = {
   speaker: 'system' | 'player' | 'computer';
@@ -22,6 +24,8 @@ type SavedProfile = {
 const APP_NAME = '끝말잇기 챌린지';
 const STORAGE_KEY = 'hangul-word-chain-profile-v1';
 const AD_GROUP_ID = 'ait.v2.live.f1653f8005f848ac';
+const BANNER_AD_GROUP_ID = 'ait.v2.live.56d161ad30744fbf';
+const HINT_AD_LIMIT = 2;
 
 const STARTER_WORDS = [
   '바다', '고양이', '지도', '소나무', '연필', '자전거', '시장', '우산', '리본', '기차',
@@ -93,9 +97,6 @@ function buildInitialState(todayKey: string) {
 
 const App: React.FC = () => {
   const todayKey = getTodayKey();
-  const dailyHash = hashString(todayKey);
-  const challengeTarget = 5 + (dailyHash % 4);
-  const challengeLetter = ['가', '나', '다', '라', '마', '바', '사'][dailyHash % 7];
 
   const initial = useMemo(() => buildInitialState(todayKey), [todayKey]);
   const localDictionary = useMemo(() => new Set([...STARTER_WORDS, ...WORD_POOL]), []);
@@ -107,9 +108,13 @@ const App: React.FC = () => {
   const [turns, setTurns] = useState<Turn[]>(initial.turns);
   const [score, setScore] = useState(0);
   const [phase, setPhase] = useState<GamePhase>('playing');
+  const [view, setView] = useState<ViewMode>('home');
+  const [hasActiveGame, setHasActiveGame] = useState(false);
   const [statusText, setStatusText] = useState('단어를 입력해 이어가 보세요.');
   const [reviveUsed, setReviveUsed] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
+  const [wrongStreak, setWrongStreak] = useState(0);
+  const [hintAdUsedCount, setHintAdUsedCount] = useState(0);
 
   const { value: profile, save: saveProfile, loading: profileLoading } = useJsonStorage<SavedProfile>(
     STORAGE_KEY,
@@ -119,11 +124,8 @@ const App: React.FC = () => {
 
   const bestToday = profile.dailyBest[todayKey] ?? 0;
   const canSubmit = inputWord.trim().length > 0 && phase === 'playing' && !isValidating;
-  const challengeWordCount = countChallengeWords(turns, challengeLetter);
-  const challengeProgress = Math.min(100, (challengeWordCount / challengeTarget) * 100);
-  const recentTurns = turns.slice(-8);
-  const latestPlayerWord = [...turns].reverse().find((turn) => turn.speaker === 'player')?.word ?? '-';
-  const latestComputerWord = [...turns].reverse().find((turn) => turn.speaker === 'computer')?.word ?? '-';
+  const hasMidGame = hasActiveGame && phase === 'playing';
+  const hintAdLimitReached = hintAdUsedCount >= HINT_AD_LIMIT;
 
   const updateProfile = (nextScore: number, addWordsCount: number, playerWord?: string) => {
     const prevTodayBest = profile.dailyBest[todayKey] ?? 0;
@@ -150,6 +152,7 @@ const App: React.FC = () => {
 
   const endGame = (message: string) => {
     setPhase('ended');
+    setHasActiveGame(false);
     setStatusText(message);
     const nextProfile: SavedProfile = {
       ...profile,
@@ -163,6 +166,19 @@ const App: React.FC = () => {
     saveProfile(nextProfile);
   };
 
+  const getWrongStatusText = (baseMessage: string, nextWrongStreak: number) => {
+    if (nextWrongStreak >= 2 && !hintAdLimitReached) {
+      return `${baseMessage} 막히면 AD 힌트를 써보세요.`;
+    }
+    return baseMessage;
+  };
+
+  const markWrongAttempt = (baseMessage: string) => {
+    const nextWrongStreak = wrongStreak + 1;
+    setWrongStreak(nextWrongStreak);
+    setStatusText(getWrongStatusText(baseMessage, nextWrongStreak));
+  };
+
   const handlePlay = async () => {
     if (phase !== 'playing' || isValidating) {
       return;
@@ -170,17 +186,17 @@ const App: React.FC = () => {
 
     const normalized = normalizeWord(inputWord);
     if (!isHangulWord(normalized)) {
-      setStatusText('한글 2글자 이상 단어를 입력해 주세요.');
+      markWrongAttempt('한글 2글자 이상 단어를 입력해 주세요.');
       return;
     }
 
     if (!normalized.startsWith(requiredChar)) {
-      setStatusText(`'${requiredChar}'로 시작하는 단어여야 해요.`);
+      markWrongAttempt(`'${requiredChar}'로 시작하는 단어여야 해요.`);
       return;
     }
 
     if (usedWords.includes(normalized)) {
-      setStatusText('이미 나온 단어예요. 다른 단어를 입력해 주세요.');
+      markWrongAttempt('이미 나온 단어예요. 다른 단어를 입력해 주세요.');
       return;
     }
 
@@ -199,7 +215,7 @@ const App: React.FC = () => {
     }
 
     if (!isValidWord) {
-      setStatusText('사전에 없는 단어예요. 다른 단어를 입력해 주세요.');
+      markWrongAttempt('사전에 없는 단어예요. 다른 단어를 입력해 주세요.');
       return;
     }
 
@@ -212,6 +228,7 @@ const App: React.FC = () => {
     updateProfile(nextScore, 1, normalized);
     setInputWord('');
     setScore(nextScore);
+    setWrongStreak(0);
 
     const computerWord = pickComputerWord(playerNextChar, afterPlayerSet, `${todayKey}-${afterPlayer.length}`);
     if (!computerWord) {
@@ -230,13 +247,6 @@ const App: React.FC = () => {
     setStatusText(`좋아요! 이제 '${computerNextChar}'로 시작하는 단어 차례예요.`);
   };
 
-  const handleGiveUp = () => {
-    if (phase !== 'playing') {
-      return;
-    }
-    endGame('이번 판은 여기까지! 새 게임으로 다시 도전해 보세요.');
-  };
-
   const resetGame = () => {
     const next = buildInitialState(todayKey);
     setInputWord('');
@@ -244,8 +254,11 @@ const App: React.FC = () => {
     setUsedWords(next.usedWords);
     setTurns(next.turns);
     setScore(0);
+    setWrongStreak(0);
+    setHintAdUsedCount(0);
     setReviveUsed(false);
     setPhase('playing');
+    setHasActiveGame(true);
     setStatusText('새 게임 시작! 끝말을 이어 주세요.');
   };
 
@@ -267,7 +280,73 @@ const App: React.FC = () => {
     setRequiredChar(nextRequired);
     setReviveUsed(true);
     setPhase('playing');
+    setHasActiveGame(true);
+    setWrongStreak(0);
     setStatusText(`구조 성공! '${nextRequired}'로 다시 이어가 보세요.`);
+  };
+
+  const applyHintReward = () => {
+    if (phase !== 'playing') {
+      return;
+    }
+
+    if (hintAdLimitReached) {
+      setStatusText(`AD 힌트는 이번 판에서 최대 ${HINT_AD_LIMIT}번까지 사용할 수 있어요.`);
+      return;
+    }
+
+    const hintWord = pickComputerWord(
+      requiredChar,
+      new Set(usedWords),
+      `${todayKey}-hint-${usedWords.length}-${hintAdUsedCount}`,
+    );
+
+    if (!hintWord) {
+      setStatusText('지금은 사용할 수 있는 힌트 단어가 없어요.');
+      return;
+    }
+
+    const nextHintAdUsedCount = hintAdUsedCount + 1;
+    const nextRequiredChar = getLastChar(hintWord);
+
+    setUsedWords([...usedWords, hintWord]);
+    setTurns([...turns, { speaker: 'system', word: hintWord, note: '광고 힌트 단어' }]);
+    setRequiredChar(nextRequiredChar);
+    setWrongStreak(0);
+    setHintAdUsedCount(nextHintAdUsedCount);
+    setStatusText(
+      `AD 힌트 ${nextHintAdUsedCount}/${HINT_AD_LIMIT} 사용 완료! '${nextRequiredChar}'로 이어가 보세요.`,
+    );
+  };
+
+  const handleHintAd = () => {
+    if (phase !== 'playing' || adLoading || hintAdLimitReached) {
+      return;
+    }
+    showAd({ onDismiss: applyHintReward });
+  };
+
+  const handleEndRound = () => {
+    if (phase !== 'playing') {
+      return;
+    }
+    endGame('이번 판을 종료했어요.');
+  };
+
+  const handleGoHome = () => {
+    setView('home');
+  };
+
+  const handleStartFromHome = () => {
+    resetGame();
+    setView('game');
+  };
+
+  const handleContinueFromHome = () => {
+    if (!hasMidGame) {
+      return;
+    }
+    setView('game');
   };
 
   if (profileLoading) {
@@ -281,175 +360,150 @@ const App: React.FC = () => {
   return (
     <>
       <DeviceViewport />
-      <div className="min-h-screen font-gmarket px-4 pb-8 max-w-4xl mx-auto">
-        <header className="pt-6 pb-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3 flex-wrap">
-              <div>
-                <p className="text-xs text-primary font-medium">혼자 모드 · 릴레이 트랙</p>
-                <h1 className="text-2xl font-bold text-slate-900 mt-1">{APP_NAME}</h1>
-                <p className="text-sm text-slate-500 mt-1">끝말을 바통처럼 넘겨 이어가는 단어 릴레이</p>
-              </div>
-              <div className="rounded-xl bg-slate-100 px-3 py-2">
-                <p className="text-[11px] text-slate-500">오늘 씨앗 단어</p>
-                <p className="text-lg font-bold text-slate-900">{initial.starter}</p>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <section className="grid gap-3 lg:grid-cols-[1.6fr_1fr]">
-          <div className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-bold text-slate-900">단어 릴레이 트랙</h2>
-              <span
-                className={`text-[11px] px-2 py-1 rounded-full ${
-                  phase === 'playing' ? 'bg-cyan-100 text-cyan-800' : 'bg-slate-200 text-slate-700'
-                }`}
-              >
-                {phase === 'playing' ? '진행 중' : '라운드 종료'}
-              </span>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="text-[11px] font-semibold text-primary">구간 1 · 내 입력</p>
-                <p className="text-sm text-slate-700 mt-1">
-                  현재 시작 글자 <strong className="text-primary">{requiredChar}</strong>
-                </p>
-                <div className="mt-2 flex gap-2">
-                  <input
-                    className="flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                    placeholder={`${requiredChar}로 시작하는 단어 입력`}
-                    value={inputWord}
-                    onChange={(event) => setInputWord(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        handlePlay();
-                      }
-                    }}
-                    disabled={phase === 'ended'}
-                  />
-                  <button
-                    className="rounded-xl bg-primary text-white px-4 text-sm font-medium disabled:opacity-40"
-                    onClick={handlePlay}
-                    disabled={!canSubmit}
-                  >
-                    {isValidating ? '검증 중...' : '연결'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="pl-4 border-l-2 border-dashed border-slate-200">
-                <div className="rounded-xl border border-slate-200 bg-white p-3">
-                  <p className="text-[11px] font-semibold text-primary">구간 2 · 응답 확인</p>
-                  <p className="text-sm text-slate-600 mt-1">내 최근 단어: {latestPlayerWord}</p>
-                  <p className="text-sm text-slate-600">상대 최근 단어: {latestComputerWord}</p>
-                  <p className="text-sm text-slate-800 mt-1">
-                    다음 목표 글자 <strong className="text-primary">{requiredChar}</strong>
-                  </p>
-                </div>
-              </div>
-
-              <div className="pl-8 border-l-2 border-dashed border-slate-200">
-                <div className="rounded-xl border border-slate-200 bg-white p-3">
-                  <p className="text-[11px] font-semibold text-primary">구간 3 · 판정 및 다음 행동</p>
-                  <p className="text-sm text-slate-600 mt-1">{statusText}</p>
-
-                  <div className="flex gap-2 mt-3 flex-wrap">
-                    {phase === 'playing' ? (
-                      <button
-                        className="rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600"
-                        onClick={handleGiveUp}
-                      >
-                        이번 판 종료
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          className="rounded-lg bg-slate-900 text-white px-3 py-2 text-xs"
-                          onClick={resetGame}
-                        >
-                          새 게임 시작
-                        </button>
-                        <button
-                          className="rounded-lg border border-cyan-200 px-3 py-2 text-xs text-cyan-800 disabled:opacity-40"
-                          disabled={reviveUsed || adLoading}
-                          onClick={() => {
-                            showAd({ onDismiss: reviveGame });
-                          }}
-                        >
-                          <span className="inline-flex items-center rounded px-1.5 py-0.5 bg-primary text-white text-[10px] mr-1">
-                            AD
-                          </span>
-                          {adLoading ? '광고 준비 중...' : '광고 보고 이어하기'}
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  {phase === 'ended' && (
-                    <p className="text-xs text-slate-500 mt-2">
-                      광고 시청 후 1회만 구조 단어를 받아 이어갈 수 있어요.
-                      {adLoading ? ' (광고 준비 중)' : ''}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <aside className="space-y-3">
-            <div className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
-              <p className="text-[11px] font-semibold text-primary">오늘의 챌린지</p>
-              <p className="text-sm text-slate-700 mt-1">
-                '{challengeLetter}' 시작 단어 {challengeWordCount}/{challengeTarget}개 연결
+      <div
+        className="font-gmarket px-4 max-w-xl mx-auto"
+        style={{
+          minHeight: 'var(--min-height, 100vh)',
+          paddingBottom: 'calc(var(--bottom-padding, 32px) + 16px)',
+        }}
+      >
+        {view === 'home' ? (
+          <section className="pt-10">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h1 className="text-2xl font-bold text-slate-900">{APP_NAME}</h1>
+              <p className="mt-1 text-sm text-slate-600">한 판씩 가볍게 이어가는 한글 끝말잇기.</p>
+              <p className="mt-4 text-sm text-slate-700">
+                시작 단어: <strong className="text-slate-900">{initial.starter}</strong>
               </p>
-              <div className="mt-3 h-2 rounded-full bg-slate-200 overflow-hidden">
-                <div className="h-full bg-primary" style={{ width: `${challengeProgress}%` }} />
-              </div>
-            </div>
 
-            <div className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
-              <h2 className="text-sm font-semibold text-slate-800">트랙 대시보드</h2>
-              <div className="mt-3 space-y-2 text-sm">
-                <div className="flex justify-between text-slate-600"><span>현재 점수</span><strong className="text-slate-900">{score}</strong></div>
-                <div className="flex justify-between text-slate-600"><span>오늘 최고</span><strong className="text-slate-900">{bestToday}</strong></div>
-                <div className="flex justify-between text-slate-600"><span>역대 최고</span><strong className="text-slate-900">{profile.bestScore}</strong></div>
-                <div className="flex justify-between text-slate-600"><span>단어 수집</span><strong className="text-slate-900">{profile.collection.length}</strong></div>
-                <div className="flex justify-between text-slate-600"><span>전체 플레이</span><strong className="text-slate-900">{profile.totalGames}</strong></div>
-                <div className="flex justify-between text-slate-600"><span>누적 단어</span><strong className="text-slate-900">{profile.totalWords}</strong></div>
-              </div>
-            </div>
-          </aside>
-        </section>
-
-        <section className="rounded-2xl bg-white border border-slate-200 p-4 mt-4 shadow-sm">
-          <h2 className="text-sm font-semibold text-slate-800">최근 릴레이 타임라인</h2>
-          <div className="mt-3 overflow-x-auto">
-            <ul className="flex gap-2 min-w-max pb-1">
-              {recentTurns.map((turn, index) => (
-                <li
-                  key={`${turn.word}-${index}`}
-                  className="rounded-lg px-3 py-2 text-sm border border-slate-200 bg-slate-50"
+              <div className="mt-5 flex gap-2">
+                <button
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm text-white"
+                  onClick={handleStartFromHome}
                 >
-                  <span
-                    className={`font-semibold mr-2 ${
-                      turn.speaker === 'player'
-                        ? 'text-primary'
-                        : turn.speaker === 'computer'
-                          ? 'text-cyan-700'
-                          : 'text-slate-500'
-                    }`}
+                  새 게임 시작
+                </button>
+                {hasMidGame && (
+                  <button
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700"
+                    onClick={handleContinueFromHome}
                   >
-                    {turn.speaker === 'player' ? '나' : turn.speaker === 'computer' ? '상대' : '시스템'}
-                  </span>
-                  <span className="text-slate-900">{turn.word}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
+                    이어하기
+                  </button>
+                )}
+              </div>
+
+              <p className="mt-3 text-[11px] text-slate-500">오늘 최고 {bestToday}점</p>
+            </div>
+          </section>
+        ) : (
+          <section className="pt-6">
+            <header className="mb-3 flex items-center justify-between">
+              <h1 className="text-xl font-bold text-slate-900">{APP_NAME}</h1>
+              <button
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700"
+                onClick={handleGoHome}
+              >
+                홈
+              </button>
+            </header>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              {phase === 'playing' ? (
+                <>
+                  <p className="text-sm text-slate-700">
+                    필수 글자 <strong className="text-slate-900">{requiredChar}</strong>
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      placeholder={`${requiredChar}로 시작하는 단어`}
+                      value={inputWord}
+                      onChange={(event) => setInputWord(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          handlePlay();
+                        }
+                      }}
+                    />
+                    <button
+                      className="rounded-lg bg-primary px-4 py-2 text-sm text-white disabled:opacity-40"
+                      onClick={handlePlay}
+                      disabled={!canSubmit}
+                    >
+                      {isValidating ? '검증 중...' : '제출'}
+                    </button>
+                  </div>
+                  <p className="mt-3 text-sm text-slate-600">{statusText}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700"
+                      onClick={handleEndRound}
+                    >
+                      이번 판 종료
+                    </button>
+                    <button
+                      className="rounded-lg border border-cyan-200 px-3 py-1.5 text-xs text-cyan-800 disabled:opacity-40"
+                      disabled={adLoading || hintAdLimitReached}
+                      onClick={handleHintAd}
+                    >
+                      {adLoading ? '광고 로딩 중...' : `AD 힌트 보기 (${hintAdUsedCount}/${HINT_AD_LIMIT})`}
+                    </button>
+                  </div>
+                  {wrongStreak >= 2 && !hintAdLimitReached && (
+                    <p className="mt-2 text-xs text-cyan-700">자꾸 틀리면 AD 힌트로 다음 단어를 받아보세요.</p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-semibold text-slate-900">라운드 종료</p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    이번 점수 {score}점 · 오늘 최고 {Math.max(bestToday, score)}점
+                  </p>
+                  <p className="mt-2 text-sm text-slate-600">{statusText}</p>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      className="rounded-lg bg-slate-900 px-3 py-2 text-sm text-white"
+                      onClick={resetGame}
+                    >
+                      다시하기
+                    </button>
+                    <button
+                      className="rounded-lg border border-cyan-200 px-3 py-2 text-sm text-cyan-800 disabled:opacity-40"
+                      disabled={reviveUsed || adLoading}
+                      onClick={() => {
+                        showAd({ onDismiss: reviveGame });
+                      }}
+                    >
+                      AD 이어하기
+                    </button>
+                    <button
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                      onClick={handleGoHome}
+                    >
+                      홈으로
+                    </button>
+                  </div>
+                  <div className="mt-4">
+                    <BannerAd adGroupId={BANNER_AD_GROUP_ID} />
+                  </div>
+                </>
+              )}
+
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-slate-100 px-3 py-2">
+                  <p className="text-[11px] text-slate-500">현재 점수</p>
+                  <p className="text-base font-bold text-slate-900">{score}</p>
+                </div>
+                <div className="rounded-lg bg-slate-100 px-3 py-2">
+                  <p className="text-[11px] text-slate-500">오늘 최고</p>
+                  <p className="text-base font-bold text-slate-900">{bestToday}</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
       </div>
     </>
   );
